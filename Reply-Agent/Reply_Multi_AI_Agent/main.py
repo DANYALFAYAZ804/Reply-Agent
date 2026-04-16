@@ -1,3 +1,7 @@
+import ulid
+
+session_id = f"The-Orchestrators-{ulid.new().str}"
+
 from dotenv import load_dotenv
 import os
 import logging
@@ -131,7 +135,7 @@ def main() -> None:
             )
         else:
             print(f"  [INFO]  No ground_truth.txt found — submission saved, scoring skipped.")
-        print(f"  {'─' * 60}")
+        print(f"  {'-' * 60}")
 
     langfuse_client.flush()
 
