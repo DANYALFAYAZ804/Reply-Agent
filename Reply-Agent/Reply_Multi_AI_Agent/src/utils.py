@@ -4,9 +4,10 @@ DIVIDER = "=" * 70
 SECTION = "-" * 70
 
 
-def print_level_header(level: int) -> None:
+def print_level_header(level: int, name: str = "") -> None:
+    label = f"LEVEL {level}" + (f" — {name.upper()}" if name else "")
     print(f"\n{DIVIDER}")
-    print(f"  THE EYE  |  MIRRORTPAY FRAUD DETECTION  |  LEVEL {level}")
+    print(f"  THE EYE  |  MIRRORTPAY FRAUD DETECTION  |  {label}")
     print(DIVIDER)
 
 

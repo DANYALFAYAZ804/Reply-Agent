@@ -13,7 +13,18 @@ from src.scorer import score_level, build_leaderboard, LevelScore
 from src.utils import print_level_header, print_section, print_level_report, print_session_summary
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
-LEVELS_TO_RUN = list(range(1, TOTAL_LEVELS + 1))
+
+LEVEL_NAMES = {
+    1: "Brave New World",
+    2: "Deus Ex",
+    3: "The Truman Show",
+    4: "Level 4",
+    5: "Level 5",
+}
+
+LEVELS_TO_RUN = [lvl for lvl in range(1, TOTAL_LEVELS + 1)
+                 if os.path.exists(os.path.join(DATA_DIR, f"level_{lvl}", "transactions.csv"))
+                 or os.path.exists(os.path.join(DATA_DIR, f"level_{lvl}", "Transactions.csv"))]
 
 
 def _load_ground_truth(level: int) -> Set[str]:
@@ -42,12 +53,13 @@ def main() -> None:
     all_scores: list[LevelScore] = []
 
     for level in LEVELS_TO_RUN:
-        print_level_header(level)
+        print_level_header(level, name=name)
 
-        dataset = load_level_dataset(DATA_DIR, level)
+        name = LEVEL_NAMES.get(level, f"Level {level}")
+        dataset = load_level_dataset(DATA_DIR, level, name=name)
 
         if not dataset.transactions:
-            print(f"  [SKIP] No Transactions.csv found for Level {level} — place data in data/level_{level}/")
+            print(f"  [SKIP] No transactions.csv found for Level {level} — place data in data/level_{level}/")
             continue
 
         print(f"  Transactions   : {len(dataset.transactions)}")

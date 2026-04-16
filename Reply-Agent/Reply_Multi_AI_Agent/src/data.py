@@ -1,7 +1,8 @@
 import os
 import csv
+import json
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 
 
 @dataclass
@@ -15,7 +16,8 @@ class Transaction:
     payment_method: str
     sender_iban: str
     recipient_iban: str
-    balance: float
+    balance_after: float
+    description: str
     timestamp: str
 
     def to_text(self) -> str:
@@ -26,7 +28,7 @@ class Transaction:
             f"type:{self.transaction_type}",
             f"amount:{self.amount}",
             f"method:{self.payment_method}",
-            f"balance:{self.balance}",
+            f"balance_after:{self.balance_after}",
             f"time:{self.timestamp}",
         ]
         if self.location:
@@ -35,6 +37,8 @@ class Transaction:
             parts.append(f"sender_iban:{self.sender_iban}")
         if self.recipient_iban:
             parts.append(f"recipient_iban:{self.recipient_iban}")
+        if self.description:
+            parts.append(f"desc:{self.description}")
         return " | ".join(parts)
 
 
@@ -44,26 +48,38 @@ class Location:
     datetime: str
     lat: str
     lng: str
+    city: str = ""
 
     def to_text(self) -> str:
-        return f"BioTag:{self.bio_tag} | time:{self.datetime} | lat:{self.lat} | lng:{self.lng}"
+        return (
+            f"BioTag:{self.bio_tag} | time:{self.datetime}"
+            f" | lat:{self.lat} | lng:{self.lng}"
+            + (f" | city:{self.city}" if self.city else "")
+        )
 
 
 @dataclass
 class User:
-    raw: Dict[str, str]
+    raw: Dict[str, Any]
 
     def to_text(self) -> str:
-        return " | ".join(f"{k}:{v}" for k, v in self.raw.items() if v)
+        parts = []
+        for k, v in self.raw.items():
+            if k == "description":
+                parts.append(f"bio:{str(v)[:200]}")
+            elif k == "residence" and isinstance(v, dict):
+                parts.append(f"city:{v.get('city','')} lat:{v.get('lat','')} lng:{v.get('lng','')}")
+            elif v:
+                parts.append(f"{k}:{v}")
+        return " | ".join(parts)
 
 
 @dataclass
 class Conversation:
-    user_id: str
     sms: str
 
     def to_text(self) -> str:
-        return f"UserID:{self.user_id} | SMS:{self.sms[:300]}"
+        return f"SMS:{self.sms[:400]}"
 
 
 @dataclass
@@ -71,12 +87,20 @@ class Message:
     mail: str
 
     def to_text(self) -> str:
-        return f"MAIL:{self.mail[:300]}"
+        text = self.mail
+        for tag in ["<html>", "<head>", "<body>", "<style>", "<script>"]:
+            if tag in text.lower():
+                import re
+                text = re.sub(r"<[^>]+>", " ", text)
+                text = " ".join(text.split())
+                break
+        return f"MAIL:{text[:400]}"
 
 
 @dataclass
 class LevelDataset:
     level: int
+    name: str = ""
     transactions: List[Transaction] = field(default_factory=list)
     locations: List[Location] = field(default_factory=list)
     users: List[User] = field(default_factory=list)
@@ -84,105 +108,106 @@ class LevelDataset:
     messages: List[Message] = field(default_factory=list)
 
 
-def _open(path: str):
-    return open(path, newline="", encoding="utf-8-sig")
+def _safe_float(val: str) -> float:
+    try:
+        return float(val) if val and val.strip() else 0.0
+    except ValueError:
+        return 0.0
 
 
 def load_transactions(path: str) -> List[Transaction]:
     txns = []
     if not os.path.exists(path):
         return txns
-    with _open(path) as f:
-        reader = csv.reader(f)
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
         for row in reader:
-            if not row or not row[0].strip():
+            txn_id = (
+                row.get("transaction_id")
+                or row.get("Transaction ID")
+                or ""
+            ).strip()
+            if not txn_id:
                 continue
-            while len(row) < 12:
-                row.append("")
-            try:
-                amount = float(row[4]) if row[4].strip() else 0.0
-            except ValueError:
-                amount = 0.0
-            try:
-                balance = float(row[9]) if row[9].strip() else 0.0
-            except ValueError:
-                balance = 0.0
             txns.append(Transaction(
-                transaction_id=row[0].strip(),
-                sender_id=row[1].strip(),
-                recipient_id=row[2].strip(),
-                transaction_type=row[3].strip(),
-                amount=amount,
-                location=row[5].strip(),
-                payment_method=row[6].strip(),
-                sender_iban=row[7].strip(),
-                recipient_iban=row[8].strip(),
-                balance=balance,
-                timestamp=row[11].strip() if len(row) > 11 else "",
+                transaction_id=txn_id,
+                sender_id=(row.get("sender_id") or row.get("Sender ID") or "").strip(),
+                recipient_id=(row.get("recipient_id") or row.get("Recipient ID") or "").strip(),
+                transaction_type=(row.get("transaction_type") or row.get("Transaction Type") or "").strip(),
+                amount=_safe_float(row.get("amount") or row.get("Amount") or ""),
+                location=(row.get("location") or row.get("Location") or "").strip(),
+                payment_method=(row.get("payment_method") or row.get("Payment Method") or "").strip(),
+                sender_iban=(row.get("sender_iban") or row.get("Sender IBAN") or "").strip(),
+                recipient_iban=(row.get("recipient_iban") or row.get("Recipient IBAN") or "").strip(),
+                balance_after=_safe_float(row.get("balance_after") or row.get("Balance") or row.get("balance") or ""),
+                description=(row.get("description") or row.get("Description") or "").strip(),
+                timestamp=(row.get("timestamp") or row.get("Timestamp") or "").strip(),
             ))
     return txns
 
 
-def load_locations(path: str) -> List[Location]:
+def load_locations_json(path: str) -> List[Location]:
     locs = []
     if not os.path.exists(path):
         return locs
-    with _open(path) as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            locs.append(Location(
-                bio_tag=row.get("BioTag", row.get("bio_tag", "")).strip(),
-                datetime=row.get("Datetime", row.get("datetime", "")).strip(),
-                lat=row.get("Lat", row.get("lat", "")).strip(),
-                lng=row.get("Lng", row.get("lng", "")).strip(),
-            ))
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    for item in data:
+        locs.append(Location(
+            bio_tag=str(item.get("biotag") or item.get("BioTag") or item.get("bio_tag") or ""),
+            datetime=str(item.get("timestamp") or item.get("Datetime") or item.get("datetime") or ""),
+            lat=str(item.get("lat") or item.get("Lat") or ""),
+            lng=str(item.get("lng") or item.get("Lng") or ""),
+            city=str(item.get("city") or ""),
+        ))
     return locs
 
 
-def load_users(path: str) -> List[User]:
+def load_users_json(path: str) -> List[User]:
     users = []
     if not os.path.exists(path):
         return users
-    with _open(path) as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            users.append(User(raw=dict(row)))
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    for item in data:
+        users.append(User(raw=item))
     return users
 
 
-def load_conversations(path: str) -> List[Conversation]:
+def load_sms_json(path: str) -> List[Conversation]:
     convs = []
     if not os.path.exists(path):
         return convs
-    with _open(path) as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            convs.append(Conversation(
-                user_id=row.get("User ID", row.get("user_id", "")).strip(),
-                sms=row.get("SMS", row.get("sms", "")).strip(),
-            ))
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    for item in data:
+        text = item.get("sms") or item.get("SMS") or ""
+        convs.append(Conversation(sms=str(text)))
     return convs
 
 
-def load_messages(path: str) -> List[Message]:
+def load_mails_json(path: str) -> List[Message]:
     msgs = []
     if not os.path.exists(path):
         return msgs
-    with _open(path) as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            msgs.append(Message(mail=row.get("mail", row.get("Mail", "")).strip()))
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    for item in data:
+        text = item.get("mail") or item.get("Mail") or ""
+        msgs.append(Message(mail=str(text)))
     return msgs
 
 
-def load_level_dataset(data_dir: str, level: int) -> LevelDataset:
+def load_level_dataset(data_dir: str, level: int, name: str = "") -> LevelDataset:
     level_dir = os.path.join(data_dir, f"level_{level}")
-    ds = LevelDataset(level=level)
-    ds.transactions = load_transactions(os.path.join(level_dir, "Transactions.csv"))
-    ds.locations = load_locations(os.path.join(level_dir, "Locations.csv"))
-    ds.users = load_users(os.path.join(level_dir, "Users.csv"))
-    ds.conversations = load_conversations(os.path.join(level_dir, "Conversations.csv"))
-    ds.messages = load_messages(os.path.join(level_dir, "Messages.csv"))
+    ds = LevelDataset(level=level, name=name)
+    ds.transactions = load_transactions(os.path.join(level_dir, "transactions.csv"))
+    if not ds.transactions:
+        ds.transactions = load_transactions(os.path.join(level_dir, "Transactions.csv"))
+    ds.locations = load_locations_json(os.path.join(level_dir, "locations.json"))
+    ds.users = load_users_json(os.path.join(level_dir, "users.json"))
+    ds.conversations = load_sms_json(os.path.join(level_dir, "sms.json"))
+    ds.messages = load_mails_json(os.path.join(level_dir, "mails.json"))
     return ds
 
 
@@ -190,15 +215,14 @@ def format_transactions_block(transactions: List[Transaction], max_rows: int = 8
     rows = transactions[:max_rows]
     lines = [t.to_text() for t in rows]
     if len(transactions) > max_rows:
-        lines.append(f"... ({len(transactions) - max_rows} more transactions truncated)")
+        lines.append(f"... ({len(transactions) - max_rows} more transactions not shown)")
     return "\n".join(lines)
 
 
 def format_locations_block(locations: List[Location], max_rows: int = 30) -> str:
     if not locations:
         return "(no location data)"
-    rows = locations[:max_rows]
-    return "\n".join(l.to_text() for l in rows)
+    return "\n".join(l.to_text() for l in locations[:max_rows])
 
 
 def format_users_block(users: List[User], max_rows: int = 20) -> str:
@@ -207,15 +231,15 @@ def format_users_block(users: List[User], max_rows: int = 20) -> str:
     return "\n".join(u.to_text() for u in users[:max_rows])
 
 
-def format_conversations_block(conversations: List[Conversation], max_rows: int = 10) -> str:
+def format_conversations_block(conversations: List[Conversation], max_rows: int = 15) -> str:
     if not conversations:
-        return "(no conversation data)"
+        return "(no SMS data)"
     return "\n".join(c.to_text() for c in conversations[:max_rows])
 
 
 def format_messages_block(messages: List[Message], max_rows: int = 10) -> str:
     if not messages:
-        return "(no message data)"
+        return "(no email data)"
     return "\n".join(m.to_text() for m in messages[:max_rows])
 
 
