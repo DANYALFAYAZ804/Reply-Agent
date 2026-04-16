@@ -1,8 +1,13 @@
 from dotenv import load_dotenv
 import os
+import logging
 
 _ENV_PATH = os.path.join(os.path.dirname(__file__), ".env")
 load_dotenv(dotenv_path=_ENV_PATH)
+
+logging.getLogger("opentelemetry.exporter.otlp").setLevel(logging.CRITICAL)
+logging.getLogger("opentelemetry.sdk").setLevel(logging.CRITICAL)
+logging.getLogger("urllib3").setLevel(logging.CRITICAL)
 
 from typing import Set
 
