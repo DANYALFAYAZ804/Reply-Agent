@@ -4,8 +4,18 @@ from typing import List
 SUBMISSIONS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "submissions")
 
 
+_LEVEL_NAMES = {
+    1: "1st_dataset",
+    2: "2nd_dataset",
+    3: "3rd_dataset",
+    4: "4th_dataset",
+    5: "5th_dataset",
+}
+
+
 def _submission_path(level: int) -> str:
-    return os.path.join(SUBMISSIONS_DIR, f"level_{level}_output.txt")
+    name = _LEVEL_NAMES.get(level, f"level_{level}")
+    return os.path.join(SUBMISSIONS_DIR, f"{name}_output.txt")
 
 
 def is_already_submitted(level: int) -> bool:

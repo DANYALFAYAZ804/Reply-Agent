@@ -112,13 +112,13 @@ def main() -> None:
         confirmed_fraud = final_ids
         confirmed_legit = [t for t in all_txn_ids if t not in set(final_ids)]
 
-        print(f"\n  {'─' * 60}")
-        print(f"  RESULTS — Level {level}: {name}")
-        print(f"  {'─' * 60}")
+        print(f"\n  {'-' * 60}")
+        print(f"  RESULTS - Level {level}: {name}")
+        print(f"  {'-' * 60}")
         print(f"  Total transactions : {total_txns}")
         print(f"  Confirmed FRAUD    : {len(confirmed_fraud)}")
         print(f"  Confirmed LEGIT    : {len(confirmed_legit)}")
-        print(f"  {'─' * 60}")
+        print(f"  {'-' * 60}")
 
         if ground_truth:
             score = score_level(level, all_txn_ids, final_ids, ground_truth)
