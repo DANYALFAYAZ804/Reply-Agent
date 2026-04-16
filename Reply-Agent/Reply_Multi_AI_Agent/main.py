@@ -3,14 +3,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import os
+from typing import Set
 from src.config import get_langfuse_client, generate_session_id, AGENT_NAME, CITY, SYSTEM_YEAR, TOTAL_LEVELS
 from src.llm import get_analyst_model, get_detector_model, get_strategist_model, get_coordinator_model
-from src.data import (
-    generate_level_data, load_transactions_from_csv, save_transactions_to_csv,
-    format_transactions, get_all_ids, get_hacker_history_text, LEVEL_PROFILES,
-)
+from src.data import load_level_dataset, get_all_txn_ids, LevelDataset
 from src.agent import run_level_pipeline
-from src.submission import save_submission, is_already_submitted, load_submission
+from src.submission import save_submission, load_submission
 from src.scorer import score_level, build_leaderboard, LevelScore
 from src.utils import print_level_header, print_section, print_level_report, print_session_summary
 
@@ -18,29 +16,12 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 LEVELS_TO_RUN = list(range(1, TOTAL_LEVELS + 1))
 
 
-def get_or_generate_data(level: int):
-    train_path = os.path.join(DATA_DIR, f"level_{level}", "train.csv")
-    eval_path = os.path.join(DATA_DIR, f"level_{level}", "eval.csv")
-
-    if os.path.exists(train_path) and os.path.exists(eval_path):
-        training = load_transactions_from_csv(train_path)
-        evaluation = load_transactions_from_csv(eval_path)
-        print(f"  [DATA] Loaded from CSV: {len(training)} training, {len(evaluation)} eval transactions.")
-    else:
-        print(f"  [DATA] No CSV found — generating synthetic data for Level {level}.")
-        training, evaluation = generate_level_data(level)
-        save_transactions_to_csv(training, train_path)
-        eval_with_labels = evaluation[:]
-        eval_no_labels = []
-        for t in evaluation:
-            import copy
-            t_copy = copy.copy(t)
-            t_copy.label = None
-            eval_no_labels.append(t_copy)
-        save_transactions_to_csv(eval_with_labels, eval_path)
-        print(f"  [DATA] Saved: {len(training)} training, {len(evaluation)} eval transactions.")
-
-    return training, evaluation
+def _load_ground_truth(level: int) -> Set[str]:
+    path = os.path.join(DATA_DIR, f"level_{level}", "ground_truth.txt")
+    if not os.path.exists(path):
+        return set()
+    with open(path, "r", encoding="utf-8") as f:
+        return {line.strip() for line in f if line.strip()}
 
 
 def main() -> None:
@@ -63,13 +44,17 @@ def main() -> None:
     for level in LEVELS_TO_RUN:
         print_level_header(level)
 
-        training, evaluation = get_or_generate_data(level)
-        training_text = format_transactions(training, include_label=True)
-        eval_text = format_transactions(evaluation, include_label=False)
-        hacker_history = get_hacker_history_text(level)
+        dataset = load_level_dataset(DATA_DIR, level)
 
-        print(f"  Training transactions : {len(training)}")
-        print(f"  Eval transactions     : {len(evaluation)}")
+        if not dataset.transactions:
+            print(f"  [SKIP] No Transactions.csv found for Level {level} — place data in data/level_{level}/")
+            continue
+
+        print(f"  Transactions   : {len(dataset.transactions)}")
+        print(f"  Locations      : {len(dataset.locations)}")
+        print(f"  Users          : {len(dataset.users)}")
+        print(f"  Conversations  : {len(dataset.conversations)}")
+        print(f"  Messages       : {len(dataset.messages)}")
         print(f"  Running 4-agent pipeline (Analyst -> Detector -> Strategist -> Coordinator)...")
 
         report = run_level_pipeline(
@@ -78,29 +63,36 @@ def main() -> None:
             detector_model=detector_model,
             strategist_model=strategist_model,
             coordinator_model=coordinator_model,
-            training_text=training_text,
-            eval_text=eval_text,
-            eval_transactions=evaluation,
-            hacker_history=hacker_history,
-            level=level,
+            dataset=dataset,
         )
 
         print_level_report(report)
 
-        save_submission(level, report.predictions, evaluation)
+        save_submission(level, report.suspected_ids)
 
-        final_predictions = load_submission(level)
-        score = score_level(level, evaluation, final_predictions)
-        all_scores.append(score)
+        final_ids = load_submission(level)
+        all_txn_ids = get_all_txn_ids(dataset.transactions)
+        ground_truth = _load_ground_truth(level)
 
-        print(f"\n  [SCORE] Level {level}: Accuracy={score.accuracy:.1%}  Precision={score.precision:.1%}"
-              f"  Recall={score.recall:.1%}  F1={score.f1:.1%}  Threat={score.threat_level}")
+        if ground_truth:
+            score = score_level(level, all_txn_ids, final_ids, ground_truth)
+            all_scores.append(score)
+            print(
+                f"\n  [SCORE] Level {level}: {score.validity_label}"
+                f" | Flagged={score.flagged} TP={score.tp} FP={score.fp} FN={score.fn}"
+                f" | Precision={score.precision:.1%} Recall={score.recall:.1%}"
+                f" F1={score.f1:.1%} Cost={score.asymmetric_cost:.1f}"
+            )
+        else:
+            print(f"\n  [SCORE] No ground_truth.txt for Level {level} — submission saved, scoring skipped.")
+            print(f"  [INFO]  Flagged {len(final_ids)} suspected fraud transactions.")
 
     langfuse_client.flush()
 
-    print(f"\n\n{'=' * 70}")
-    print("  THE EYE — LEADERBOARD")
-    print(build_leaderboard(all_scores))
+    if all_scores:
+        print(f"\n\n{'=' * 70}")
+        print("  THE EYE — LEADERBOARD")
+        print(build_leaderboard(all_scores))
 
     print_session_summary(session_id, len(LEVELS_TO_RUN))
 

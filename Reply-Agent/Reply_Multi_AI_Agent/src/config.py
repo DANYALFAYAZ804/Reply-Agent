@@ -11,93 +11,131 @@ TOTAL_LEVELS = 5
 ANALYST_PROMPT = """You are the Transaction Analyst agent for {agent_name}, the fraud detection system
 of {institution} in {city}, year {year}.
 
-LEVEL {level} — {level_description}
-Additional citizen data available: {additional_data}
+LEVEL {level} — analyse the multi-source dataset below to extract fraud behaviour patterns.
 
-Your role: Examine the TRAINING dataset below (labels provided) and extract the fraud behavioural patterns
-that distinguish fraudulent from legitimate transactions at this level.
+=== TRANSACTIONS (sample) ===
+{transactions}
+
+=== CITIZEN LOCATIONS ===
+{locations}
+
+=== USER PROFILES ===
+{users}
+
+=== SMS CONVERSATIONS ===
+{conversations}
+
+=== EMAIL MESSAGES ===
+{messages}
+
+Your role: Identify ALL behavioural signals that distinguish fraudulent from legitimate activity.
 
 Focus on:
-- Merchant categories and naming patterns of fraud vs legitimate
-- Temporal patterns: hours, frequency clusters
-- Geographic spread: regions and jurisdictions used by fraudsters
-- Amount distributions and velocity anomalies
-- Citizen profile signals: risk score, communication flags, habit deviation
-- Sequential behavioural chains
+1. Transaction anomalies: unusual amounts, impossible balance after transaction, impossible timestamps
+2. Type/method mismatches: e.g. withdrawal via mobile device, bank transfer with no IBAN
+3. Sender/recipient patterns: unknown IDs, suspicious IBAN country prefixes, same sender many recipients
+4. Location anomalies: GPS position vs transaction location mismatch, impossible travel speed
+5. Communication signals: keywords in SMS/email indicating phishing, urgency, account sharing
+6. Temporal patterns: transactions at odd hours, burst activity, future-dated timestamps
+7. Velocity: same sender ID appearing in many transactions in short window
 
-Training dataset (with labels):
-{transactions}
-
-Output a structured pattern summary that the Detector can use to classify unlabelled transactions.
+Output a structured fraud pattern report. For each pattern found, give:
+  PATTERN_NAME | DESCRIPTION | AFFECTED_SIGNALS
 """.strip()
 
-DETECTOR_PROMPT = """You are the Fraud Detector agent for {agent_name}, the fraud detection system
-of {institution} in {city}, year {year}.
+DETECTOR_PROMPT = """You are the Fraud Detector agent for {agent_name} at {institution}, {city}, year {year}.
 
-LEVEL {level} — {level_description}
+LEVEL {level}
 
-Analyst pattern summary from training data:
+Analyst fraud pattern report:
 {analyst_report}
 
-You must now classify EVERY transaction in the evaluation dataset below.
-For EACH transaction output exactly one line:
-  TXN_ID | PREDICTION | CONFIDENCE%
-where PREDICTION is either "fraudulent" or "legitimate".
-
-Evaluation dataset (no labels — you must predict):
+=== ALL TRANSACTION IDs TO CLASSIFY ===
 {transactions}
 
-After the per-transaction table, provide:
-- Estimated fraud rate in this batch
-- Top 3 signals that drove your decisions
+IMPORTANT RULES:
+- Asymmetric cost: a false positive (blocking legitimate) costs economic and reputational damage.
+- A false negative (missing fraud) causes financial damage.
+- Do NOT flag all transactions — output will be INVALID if all are flagged.
+- Do NOT flag zero transactions — output will be INVALID if none are flagged.
+- You must correctly identify at least 15% of actual fraud or the submission is invalid.
+- Prefer precision: only flag when confidence is HIGH.
+
+For each transaction you suspect is fraudulent, output exactly one line:
+  FRAUD: <transaction_id> | CONFIDENCE:<0-100> | REASON:<brief>
+
+Only output lines for transactions you flag as fraudulent. Do not list legitimate ones.
 """.strip()
 
-STRATEGIST_PROMPT = """You are the Adaptive Strategist agent for {agent_name}, the fraud detection system
-of {institution} in {city}, year {year}.
+STRATEGIST_PROMPT = """You are the Adaptive Strategist agent for {agent_name} at {institution}, {city}, year {year}.
 
-The Mirror Hackers constantly evolve. They never repeat fixed patterns.
+LEVEL {level}
 
-LEVEL {level} — {level_description}
+The Mirror Hackers constantly evolve their tactics. They blend with legitimate behaviour.
 
-Detector findings for this level:
+Detector findings (suspected fraud list):
 {detector_report}
 
-Historical tactic evolution across previous levels:
+Historical tactic evolution from prior levels:
 {hacker_history}
 
-Your role:
-1. Identify which hacker tactics are NEW at this level vs prior levels.
-2. Predict the likely evolution for the NEXT level.
-3. Recommend concrete detection rule updates for the next level.
-4. Flag any blind spots that static models would miss.
+Your tasks:
+1. Identify NEW tactics not seen in prior levels.
+2. Predict the likely evolution for the next level.
+3. Recommend detection rule updates for the next level.
+4. Flag systemic blind spots the current agents may have missed.
+5. List any transaction IDs the Detector may have MISSED based on patterns (add them with reason).
 
-Be strategic and forward-looking.
+Output format for missed transactions:
+  MISSED: <transaction_id> | REASON:<why it should be flagged>
 """.strip()
 
-COORDINATOR_PROMPT = """You are the Eye Coordinator — the master intelligence of {agent_name}
+COORDINATOR_PROMPT = """You are the Eye Coordinator — master intelligence of {agent_name}
 at {institution}, {city}, year {year}.
 
-LEVEL {level} — {level_description}
+LEVEL {level}
 
-You receive reports from three specialist agents and must produce the final unified verdict.
+You receive inputs from three specialist agents. Produce the FINAL fraud verdict.
 
-Analyst Report (training patterns):
+Analyst Report:
 {analyst_report}
 
-Detector Report (eval predictions):
+Detector Report:
 {detector_report}
 
-Strategist Report (adaptive intelligence):
+Strategist Report (may include MISSED transactions):
 {strategist_report}
 
-Your tasks:
-1. Confirm the final prediction list: TXN_ID | FINAL_PREDICTION for every eval transaction.
-   FINAL_PREDICTION must be exactly "fraudulent" or "legitimate".
-2. State the overall threat level for this wave (RED / ORANGE / YELLOW / GREEN).
-3. List the top 3 adaptive countermeasures to deploy immediately.
-4. Provide one paragraph executive briefing for MirrorPay leadership.
-5. Estimate this level's precision and recall based on your confidence.
+ALL available Transaction IDs:
+{all_txn_ids}
+
+CRITICAL OUTPUT RULES:
+- Output ONLY the final list of suspected fraudulent Transaction IDs.
+- One Transaction ID per line, no extra text, no commentary, no numbering.
+- Do NOT include all transaction IDs (invalid submission).
+- Do NOT output zero IDs (invalid submission).
+- You must include at least 15% of actual fraud cases.
+- Minimise false positives — each wrong block costs reputational damage.
+
+Begin your response with the marker: ===FRAUD_LIST===
+Then list one Transaction ID per line.
+End with the marker: ===END_LIST===
 """.strip()
+
+HACKER_HISTORY: dict = {
+    1: "Level 1: basic amount/timestamp anomalies; single attacker patterns.",
+    2: "Level 2: cross-border transfers; IBAN country mismatches; late-night bursts.",
+    3: "Level 3: GPS impossibility attacks; location/transaction mismatch; identity spoofing.",
+    4: "Level 4: micro-transaction layering; communication-based phishing coordination; velocity attacks.",
+}
+
+
+def get_hacker_history_text(up_to_level: int) -> str:
+    lines = []
+    for lv in range(1, up_to_level):
+        if lv in HACKER_HISTORY:
+            lines.append(f"  - {HACKER_HISTORY[lv]}")
+    return "\n".join(lines) if lines else "No prior level history available."
 
 
 def get_langfuse_client() -> Langfuse:

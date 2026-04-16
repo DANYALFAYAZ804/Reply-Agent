@@ -1,17 +1,12 @@
 from src.agent import LevelReport
-from src.data import LEVEL_PROFILES
 
 DIVIDER = "=" * 70
 SECTION = "-" * 70
 
 
 def print_level_header(level: int) -> None:
-    profile = LEVEL_PROFILES.get(level, {})
-    desc = profile.get("description", f"Level {level}")
-    additional = profile.get("additional_data", "")
     print(f"\n{DIVIDER}")
-    print(f"  THE EYE  |  MIRRORTPAY FRAUD DETECTION  |  {desc.upper()}")
-    print(f"  Additional citizen data: {additional}")
+    print(f"  THE EYE  |  MIRRORTPAY FRAUD DETECTION  |  LEVEL {level}")
     print(DIVIDER)
 
 
@@ -23,22 +18,24 @@ def print_section(title: str, content: str) -> None:
 
 
 def print_level_report(report: LevelReport) -> None:
-    print_section(f"[LEVEL {report.level}] TRANSACTION ANALYST REPORT", report.analyst_report)
-    print_section(f"[LEVEL {report.level}] FRAUD DETECTOR PREDICTIONS", report.detector_report)
-    print_section(f"[LEVEL {report.level}] ADAPTIVE STRATEGIST ASSESSMENT", report.strategist_report)
-    print_section(f"[LEVEL {report.level}] COORDINATOR FINAL VERDICT", report.coordinator_report)
-    print(f"\n  [PREDICTIONS] {len(report.predictions)} transactions classified.")
-    fraud_count = sum(1 for v in report.predictions.values() if v == "fraudulent")
-    legit_count = len(report.predictions) - fraud_count
-    print(f"  Fraudulent: {fraud_count}  |  Legitimate: {legit_count}")
+    print_section(f"[LEVEL {report.level}] ANALYST — FRAUD PATTERN REPORT", report.analyst_report)
+    print_section(f"[LEVEL {report.level}] DETECTOR — FLAGGED TRANSACTIONS", report.detector_report)
+    print_section(f"[LEVEL {report.level}] STRATEGIST — ADAPTIVE INTELLIGENCE", report.strategist_report)
+    print_section(f"[LEVEL {report.level}] COORDINATOR — FINAL VERDICT", report.coordinator_report)
+    print(f"\n  [RESULT] {len(report.suspected_ids)} transactions flagged as suspected fraud.")
+    if report.suspected_ids:
+        preview = report.suspected_ids[:5]
+        more = len(report.suspected_ids) - 5
+        print(f"  Sample IDs: {', '.join(preview)}" + (f" ... +{more} more" if more > 0 else ""))
 
 
 def print_session_summary(session_id: str, total_levels: int) -> None:
     print(f"\n{DIVIDER}")
     print("  THE EYE — MISSION COMPLETE")
     print(DIVIDER)
-    print(f"  Levels completed  : {total_levels}")
+    print(f"  Levels processed  : {total_levels}")
     print(f"  Session ID        : {session_id}")
     print(f"  Langfuse traces   : {total_levels * 4} agent calls grouped under session")
-    print(f"  Submissions       : saved in submissions/ (first submission per level is final)")
+    print(f"  Output files      : submissions/level_N_output.txt (ASCII, one TXN ID per line)")
+    print(f"  Scoring note      : FP cost = 1x  |  FN cost = 3x  (asymmetric)")
     print(DIVIDER)

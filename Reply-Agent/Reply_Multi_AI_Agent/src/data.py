@@ -1,256 +1,223 @@
 import os
 import csv
-import random
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
 
 
 @dataclass
 class Transaction:
-    txn_id: str
+    transaction_id: str
+    sender_id: str
+    recipient_id: str
+    transaction_type: str
     amount: float
-    merchant: str
-    category: str
-    hour: int
-    region: str
-    jurisdiction: str
-    frequency_last_hour: int
-    citizen_id: str = ""
-    citizen_age: int = 0
-    citizen_risk_score: float = 0.0
-    communication_flags: int = 0
-    habit_deviation_score: float = 0.0
-    label: Optional[str] = None
+    location: str
+    payment_method: str
+    sender_iban: str
+    recipient_iban: str
+    balance: float
+    timestamp: str
 
-    def __str__(self) -> str:
-        citizen_info = ""
-        if self.citizen_id:
-            citizen_info = (
-                f" | citizen:{self.citizen_id} age:{self.citizen_age}"
-                f" risk:{self.citizen_risk_score:.2f} comm_flags:{self.communication_flags}"
-                f" habit_dev:{self.habit_deviation_score:.2f}"
-            )
-        label_str = f" | label:{self.label}" if self.label else ""
-        return (
-            f"TXN:{self.txn_id} | ${self.amount:.2f} | {self.merchant} ({self.category})"
-            f" | {self.hour:02d}:00h | {self.region}/{self.jurisdiction}"
-            f" | freq/hr:{self.frequency_last_hour}{citizen_info}{label_str}"
-        )
+    def to_text(self) -> str:
+        parts = [
+            f"TXN_ID:{self.transaction_id}",
+            f"sender:{self.sender_id}",
+            f"recipient:{self.recipient_id}",
+            f"type:{self.transaction_type}",
+            f"amount:{self.amount}",
+            f"method:{self.payment_method}",
+            f"balance:{self.balance}",
+            f"time:{self.timestamp}",
+        ]
+        if self.location:
+            parts.append(f"location:{self.location}")
+        if self.sender_iban:
+            parts.append(f"sender_iban:{self.sender_iban}")
+        if self.recipient_iban:
+            parts.append(f"recipient_iban:{self.recipient_iban}")
+        return " | ".join(parts)
 
 
-LEVEL_PROFILES: Dict[int, Dict] = {
-    1: {
-        "description": "Level 1 — Daytime retail targeting (basic patterns)",
-        "fraud_merchants": ["QuickMart-Fake", "NeonGrocer-Clone", "DataFuel Spoof"],
-        "fraud_categories": ["retail", "fuel", "grocery"],
-        "fraud_hours": list(range(9, 18)),
-        "fraud_regions": ["Central District", "East Quarter"],
-        "fraud_jurisdictions": ["MR-ALPHA"],
-        "fraud_amount_range": (50, 400),
-        "fraud_freq_range": (1, 3),
-        "legit_merchants": ["QuickMart", "NeonGrocer", "DataFuel Station", "FreshMarket"],
-        "legit_categories": ["retail", "fuel", "grocery", "pharmacy"],
-        "legit_amount_range": (10, 300),
-        "additional_data": "basic demographics",
-    },
-    2: {
-        "description": "Level 2 — Late-night entertainment & cross-border",
-        "fraud_merchants": ["SynthBar-Ghost", "HoloCasino-Shadow", "NightStream-Fake"],
-        "fraud_categories": ["entertainment", "gambling", "streaming"],
-        "fraud_hours": list(range(22, 24)) + list(range(0, 5)),
-        "fraud_regions": ["West Fringe", "Border Zone"],
-        "fraud_jurisdictions": ["MR-BETA", "MR-GAMMA"],
-        "fraud_amount_range": (200, 1500),
-        "fraud_freq_range": (3, 8),
-        "legit_merchants": ["SynthBar", "CinemaX", "StreamHub", "NightDiner"],
-        "legit_categories": ["entertainment", "dining", "streaming", "transport"],
-        "legit_amount_range": (20, 800),
-        "additional_data": "demographics + communication metadata",
-    },
-    3: {
-        "description": "Level 3 — High-value B2B impersonation",
-        "fraud_merchants": ["MirrorLogistics-Fake", "SyntheticSupply Ghost", "DataBroker Rogue"],
-        "fraud_categories": ["logistics", "wholesale", "data-brokerage"],
-        "fraud_hours": list(range(6, 10)),
-        "fraud_regions": ["Finance Spire", "Corporate Arc"],
-        "fraud_jurisdictions": ["MR-DELTA", "MR-EPSILON"],
-        "fraud_amount_range": (5000, 50000),
-        "fraud_freq_range": (1, 2),
-        "legit_merchants": ["MirrorLogistics", "SupplyChain Co.", "DataExchange Ltd"],
-        "legit_categories": ["logistics", "wholesale", "finance"],
-        "legit_amount_range": (1000, 30000),
-        "additional_data": "demographics + communications + transaction history",
-    },
-    4: {
-        "description": "Level 4 — Identity morphing & micro-transaction layering",
-        "fraud_merchants": ["PayNode-Phantom", "CryptoRelay-X", "MicroVault-Ghost"],
-        "fraud_categories": ["crypto", "transfer", "micro-payment"],
-        "fraud_hours": list(range(0, 24)),
-        "fraud_regions": ["Shadow Sector", "Relay District", "Anonymous Zone"],
-        "fraud_jurisdictions": ["MR-ZETA", "MR-ETA", "MR-THETA"],
-        "fraud_amount_range": (1, 50),
-        "fraud_freq_range": (15, 40),
-        "legit_merchants": ["PayNode", "CryptoRelay", "MicroVault"],
-        "legit_categories": ["crypto", "transfer", "micro-payment"],
-        "legit_amount_range": (1, 200),
-        "additional_data": "full demographics + communications + habits + network graph",
-    },
-    5: {
-        "description": "Level 5 — Hybrid multi-vector coordinated attack",
-        "fraud_merchants": ["OmniPay-Mirage", "TrustNet-Fake", "ClearPath-Ghost", "NexusBank-Clone"],
-        "fraud_categories": ["omni-payment", "trust-transfer", "clearance", "banking"],
-        "fraud_hours": list(range(0, 24)),
-        "fraud_regions": ["All Sectors"],
-        "fraud_jurisdictions": ["MR-IOTA", "MR-KAPPA", "MR-LAMBDA"],
-        "fraud_amount_range": (100, 100000),
-        "fraud_freq_range": (1, 20),
-        "legit_merchants": ["OmniPay", "TrustNet", "ClearPath", "NexusBank"],
-        "legit_categories": ["omni-payment", "trust-transfer", "clearance", "banking"],
-        "legit_amount_range": (50, 50000),
-        "additional_data": "full citizen profile: demographics + comms + habits + network + behavioural biometrics",
-    },
-}
+@dataclass
+class Location:
+    bio_tag: str
+    datetime: str
+    lat: str
+    lng: str
 
-HACKER_HISTORY: Dict[int, str] = {
-    1: "Level 1: small-amount daytime retail clones; single jurisdiction MR-ALPHA; low velocity 1-3/hr.",
-    2: "Level 2: late-night entertainment/gambling; cross-border MR-BETA/MR-GAMMA; medium-high velocity 3-8/hr; $200-$1,500.",
-    3: "Level 3: early-morning B2B impersonation; high-value $5k-$50k; Corporate Arc; MR-DELTA/MR-EPSILON; very low frequency.",
-    4: "Level 4: identity morphing + micro-transaction layering across anonymous zones; ultra-high frequency 15-40/hr; tiny amounts $1-$50.",
-}
+    def to_text(self) -> str:
+        return f"BioTag:{self.bio_tag} | time:{self.datetime} | lat:{self.lat} | lng:{self.lng}"
 
 
-def _make_txn_id(level: int, index: int, split: str = "train") -> str:
-    prefix = "TR" if split == "train" else "EV"
-    return f"L{level}-{prefix}-{index:04d}"
+@dataclass
+class User:
+    raw: Dict[str, str]
+
+    def to_text(self) -> str:
+        return " | ".join(f"{k}:{v}" for k, v in self.raw.items() if v)
 
 
-def _make_citizen_id(index: int) -> str:
-    return f"CIT-{index:05d}"
+@dataclass
+class Conversation:
+    user_id: str
+    sms: str
+
+    def to_text(self) -> str:
+        return f"UserID:{self.user_id} | SMS:{self.sms[:300]}"
 
 
-def _generate_transactions(
-    level: int,
-    n_legit: int,
-    n_fraud: int,
-    split: str,
-    seed_offset: int = 0,
-) -> List[Transaction]:
-    profile = LEVEL_PROFILES[level]
-    transactions: List[Transaction] = []
+@dataclass
+class Message:
+    mail: str
 
-    for i in range(n_legit):
-        cit_idx = random.randint(1000, 9999)
-        transactions.append(Transaction(
-            txn_id=_make_txn_id(level, i + 1 + seed_offset, split),
-            amount=round(random.uniform(*profile["legit_amount_range"]), 2),
-            merchant=random.choice(profile["legit_merchants"]),
-            category=random.choice(profile["legit_categories"]),
-            hour=random.randint(8, 20),
-            region="Central District",
-            jurisdiction="MR-ALPHA",
-            frequency_last_hour=random.randint(1, 2),
-            citizen_id=_make_citizen_id(cit_idx),
-            citizen_age=random.randint(18, 75),
-            citizen_risk_score=round(random.uniform(0.0, 0.3), 2),
-            communication_flags=random.randint(0, 1),
-            habit_deviation_score=round(random.uniform(0.0, 0.2), 2),
-            label="legitimate",
-        ))
-
-    for i in range(n_fraud):
-        cit_idx = random.randint(1000, 9999)
-        transactions.append(Transaction(
-            txn_id=_make_txn_id(level, 500 + i + 1 + seed_offset, split),
-            amount=round(random.uniform(*profile["fraud_amount_range"]), 2),
-            merchant=random.choice(profile["fraud_merchants"]),
-            category=random.choice(profile["fraud_categories"]),
-            hour=random.choice(profile["fraud_hours"]),
-            region=random.choice(profile["fraud_regions"]),
-            jurisdiction=random.choice(profile["fraud_jurisdictions"]),
-            frequency_last_hour=random.randint(*profile["fraud_freq_range"]),
-            citizen_id=_make_citizen_id(cit_idx),
-            citizen_age=random.randint(18, 75),
-            citizen_risk_score=round(random.uniform(0.6, 1.0), 2),
-            communication_flags=random.randint(2, 8),
-            habit_deviation_score=round(random.uniform(0.5, 1.0), 2),
-            label="fraudulent",
-        ))
-
-    random.shuffle(transactions)
-    return transactions
+    def to_text(self) -> str:
+        return f"MAIL:{self.mail[:300]}"
 
 
-def generate_level_data(level: int, n_train_legit: int = 20, n_train_fraud: int = 8,
-                        n_eval_legit: int = 15, n_eval_fraud: int = 6):
-    training = _generate_transactions(level, n_train_legit, n_train_fraud, "train")
-    evaluation = _generate_transactions(level, n_eval_legit, n_eval_fraud, "eval", seed_offset=200)
-    return training, evaluation
+@dataclass
+class LevelDataset:
+    level: int
+    transactions: List[Transaction] = field(default_factory=list)
+    locations: List[Location] = field(default_factory=list)
+    users: List[User] = field(default_factory=list)
+    conversations: List[Conversation] = field(default_factory=list)
+    messages: List[Message] = field(default_factory=list)
 
 
-def load_transactions_from_csv(filepath: str) -> List[Transaction]:
-    transactions = []
-    if not os.path.exists(filepath):
-        return transactions
-    with open(filepath, newline="", encoding="utf-8") as f:
+def _open(path: str):
+    return open(path, newline="", encoding="utf-8-sig")
+
+
+def load_transactions(path: str) -> List[Transaction]:
+    txns = []
+    if not os.path.exists(path):
+        return txns
+    with _open(path) as f:
+        reader = csv.reader(f)
+        for row in reader:
+            if not row or not row[0].strip():
+                continue
+            while len(row) < 12:
+                row.append("")
+            try:
+                amount = float(row[4]) if row[4].strip() else 0.0
+            except ValueError:
+                amount = 0.0
+            try:
+                balance = float(row[9]) if row[9].strip() else 0.0
+            except ValueError:
+                balance = 0.0
+            txns.append(Transaction(
+                transaction_id=row[0].strip(),
+                sender_id=row[1].strip(),
+                recipient_id=row[2].strip(),
+                transaction_type=row[3].strip(),
+                amount=amount,
+                location=row[5].strip(),
+                payment_method=row[6].strip(),
+                sender_iban=row[7].strip(),
+                recipient_iban=row[8].strip(),
+                balance=balance,
+                timestamp=row[11].strip() if len(row) > 11 else "",
+            ))
+    return txns
+
+
+def load_locations(path: str) -> List[Location]:
+    locs = []
+    if not os.path.exists(path):
+        return locs
+    with _open(path) as f:
         reader = csv.DictReader(f)
         for row in reader:
-            transactions.append(Transaction(
-                txn_id=row.get("txn_id", ""),
-                amount=float(row.get("amount", 0)),
-                merchant=row.get("merchant", ""),
-                category=row.get("category", ""),
-                hour=int(row.get("hour", 0)),
-                region=row.get("region", ""),
-                jurisdiction=row.get("jurisdiction", ""),
-                frequency_last_hour=int(row.get("frequency_last_hour", 0)),
-                citizen_id=row.get("citizen_id", ""),
-                citizen_age=int(row.get("citizen_age", 0)),
-                citizen_risk_score=float(row.get("citizen_risk_score", 0)),
-                communication_flags=int(row.get("communication_flags", 0)),
-                habit_deviation_score=float(row.get("habit_deviation_score", 0)),
-                label=row.get("label", None) or None,
+            locs.append(Location(
+                bio_tag=row.get("BioTag", row.get("bio_tag", "")).strip(),
+                datetime=row.get("Datetime", row.get("datetime", "")).strip(),
+                lat=row.get("Lat", row.get("lat", "")).strip(),
+                lng=row.get("Lng", row.get("lng", "")).strip(),
             ))
-    return transactions
+    return locs
 
 
-def save_transactions_to_csv(transactions: List[Transaction], filepath: str) -> None:
-    os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    with open(filepath, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow([
-            "txn_id", "amount", "merchant", "category", "hour",
-            "region", "jurisdiction", "frequency_last_hour",
-            "citizen_id", "citizen_age", "citizen_risk_score",
-            "communication_flags", "habit_deviation_score", "label",
-        ])
-        for t in transactions:
-            writer.writerow([
-                t.txn_id, t.amount, t.merchant, t.category, t.hour,
-                t.region, t.jurisdiction, t.frequency_last_hour,
-                t.citizen_id, t.citizen_age, t.citizen_risk_score,
-                t.communication_flags, t.habit_deviation_score,
-                t.label if t.label else "",
-            ])
+def load_users(path: str) -> List[User]:
+    users = []
+    if not os.path.exists(path):
+        return users
+    with _open(path) as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            users.append(User(raw=dict(row)))
+    return users
 
 
-def format_transactions(transactions: List[Transaction], include_label: bool = True) -> str:
-    lines = []
-    for t in transactions:
-        original_label = t.label
-        if not include_label:
-            t.label = None
-        lines.append(str(t))
-        t.label = original_label
+def load_conversations(path: str) -> List[Conversation]:
+    convs = []
+    if not os.path.exists(path):
+        return convs
+    with _open(path) as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            convs.append(Conversation(
+                user_id=row.get("User ID", row.get("user_id", "")).strip(),
+                sms=row.get("SMS", row.get("sms", "")).strip(),
+            ))
+    return convs
+
+
+def load_messages(path: str) -> List[Message]:
+    msgs = []
+    if not os.path.exists(path):
+        return msgs
+    with _open(path) as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            msgs.append(Message(mail=row.get("mail", row.get("Mail", "")).strip()))
+    return msgs
+
+
+def load_level_dataset(data_dir: str, level: int) -> LevelDataset:
+    level_dir = os.path.join(data_dir, f"level_{level}")
+    ds = LevelDataset(level=level)
+    ds.transactions = load_transactions(os.path.join(level_dir, "Transactions.csv"))
+    ds.locations = load_locations(os.path.join(level_dir, "Locations.csv"))
+    ds.users = load_users(os.path.join(level_dir, "Users.csv"))
+    ds.conversations = load_conversations(os.path.join(level_dir, "Conversations.csv"))
+    ds.messages = load_messages(os.path.join(level_dir, "Messages.csv"))
+    return ds
+
+
+def format_transactions_block(transactions: List[Transaction], max_rows: int = 80) -> str:
+    rows = transactions[:max_rows]
+    lines = [t.to_text() for t in rows]
+    if len(transactions) > max_rows:
+        lines.append(f"... ({len(transactions) - max_rows} more transactions truncated)")
     return "\n".join(lines)
 
 
-def get_all_ids(transactions: List[Transaction]) -> str:
-    return ", ".join(t.txn_id for t in transactions)
+def format_locations_block(locations: List[Location], max_rows: int = 30) -> str:
+    if not locations:
+        return "(no location data)"
+    rows = locations[:max_rows]
+    return "\n".join(l.to_text() for l in rows)
 
 
-def get_hacker_history_text(up_to_level: int) -> str:
-    lines = []
-    for lv in range(1, up_to_level):
-        if lv in HACKER_HISTORY:
-            lines.append(f"  - {HACKER_HISTORY[lv]}")
-    return "\n".join(lines) if lines else "No prior level history available."
+def format_users_block(users: List[User], max_rows: int = 20) -> str:
+    if not users:
+        return "(no user data)"
+    return "\n".join(u.to_text() for u in users[:max_rows])
+
+
+def format_conversations_block(conversations: List[Conversation], max_rows: int = 10) -> str:
+    if not conversations:
+        return "(no conversation data)"
+    return "\n".join(c.to_text() for c in conversations[:max_rows])
+
+
+def format_messages_block(messages: List[Message], max_rows: int = 10) -> str:
+    if not messages:
+        return "(no message data)"
+    return "\n".join(m.to_text() for m in messages[:max_rows])
+
+
+def get_all_txn_ids(transactions: List[Transaction]) -> List[str]:
+    return [t.transaction_id for t in transactions]

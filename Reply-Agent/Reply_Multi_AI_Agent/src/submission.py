@@ -1,44 +1,33 @@
 import os
-import csv
-from typing import Dict, List
-from src.data import Transaction
-
+from typing import List
 
 SUBMISSIONS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "submissions")
 
 
 def _submission_path(level: int) -> str:
-    return os.path.join(SUBMISSIONS_DIR, f"level_{level}_submission.csv")
+    return os.path.join(SUBMISSIONS_DIR, f"level_{level}_output.txt")
 
 
 def is_already_submitted(level: int) -> bool:
     return os.path.exists(_submission_path(level))
 
 
-def save_submission(level: int, predictions: Dict[str, str], eval_transactions: List[Transaction]) -> str:
+def save_submission(level: int, suspected_ids: List[str]) -> str:
     path = _submission_path(level)
     if is_already_submitted(level):
-        print(f"  [SUBMISSION] Level {level} already submitted. First submission is final — skipping overwrite.")
+        print(f"  [SUBMISSION] Level {level} already submitted — first submission is final, skipping overwrite.")
         return path
     os.makedirs(SUBMISSIONS_DIR, exist_ok=True)
-    id_set = {t.txn_id for t in eval_transactions}
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(["txn_id", "prediction"])
-        for txn_id in sorted(id_set):
-            prediction = predictions.get(txn_id, "legitimate")
-            writer.writerow([txn_id, prediction])
-    print(f"  [SUBMISSION] Level {level} submission saved -> {path}")
+    with open(path, "w", encoding="ascii", errors="replace") as f:
+        for txn_id in suspected_ids:
+            f.write(txn_id + "\n")
+    print(f"  [SUBMISSION] Level {level} output saved -> {path}  ({len(suspected_ids)} suspected fraud TXNs)")
     return path
 
 
-def load_submission(level: int) -> Dict[str, str]:
+def load_submission(level: int) -> List[str]:
     path = _submission_path(level)
-    result: Dict[str, str] = {}
     if not os.path.exists(path):
-        return result
-    with open(path, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            result[row["txn_id"]] = row["prediction"]
-    return result
+        return []
+    with open(path, "r", encoding="ascii", errors="replace") as f:
+        return [line.strip() for line in f if line.strip()]

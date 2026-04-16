@@ -1,20 +1,16 @@
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional
-from src.data import Transaction
+from dataclasses import dataclass
+from typing import List, Set
 
 
 @dataclass
 class LevelScore:
     level: int
-    total: int
+    total_txns: int
+    flagged: int
     tp: int
     fp: int
-    tn: int
     fn: int
-
-    @property
-    def accuracy(self) -> float:
-        return (self.tp + self.tn) / self.total if self.total else 0.0
+    tn: int
 
     @property
     def precision(self) -> float:
@@ -30,52 +26,83 @@ class LevelScore:
         return 2 * p * r / (p + r) if (p + r) else 0.0
 
     @property
-    def threat_level(self) -> str:
-        if self.f1 >= 0.90:
-            return "GREEN"
-        elif self.f1 >= 0.75:
-            return "YELLOW"
-        elif self.f1 >= 0.55:
-            return "ORANGE"
-        return "RED"
+    def accuracy(self) -> float:
+        return (self.tp + self.tn) / self.total_txns if self.total_txns else 0.0
+
+    @property
+    def fp_rate(self) -> float:
+        return self.fp / (self.fp + self.tn) if (self.fp + self.tn) else 0.0
+
+    @property
+    def asymmetric_cost(self) -> float:
+        fp_cost = self.fp * 1.0
+        fn_cost = self.fn * 3.0
+        return fp_cost + fn_cost
+
+    @property
+    def submission_valid(self) -> bool:
+        if self.flagged == 0:
+            return False
+        if self.flagged == self.total_txns:
+            return False
+        total_fraud = self.tp + self.fn
+        if total_fraud > 0 and self.tp / total_fraud < 0.15:
+            return False
+        return True
+
+    @property
+    def validity_label(self) -> str:
+        return "VALID" if self.submission_valid else "INVALID"
 
 
 def score_level(
     level: int,
-    eval_transactions: List[Transaction],
-    predictions: Dict[str, str],
+    all_txn_ids: List[str],
+    suspected_ids: List[str],
+    ground_truth_fraud_ids: Set[str],
 ) -> LevelScore:
-    tp = fp = tn = fn = 0
-    for txn in eval_transactions:
-        true_label = txn.label or "legitimate"
-        pred_label = predictions.get(txn.txn_id, "legitimate")
-        if true_label == "fraudulent" and pred_label == "fraudulent":
-            tp += 1
-        elif true_label == "legitimate" and pred_label == "fraudulent":
-            fp += 1
-        elif true_label == "legitimate" and pred_label == "legitimate":
-            tn += 1
-        else:
-            fn += 1
-    return LevelScore(level=level, total=len(eval_transactions), tp=tp, fp=fp, tn=tn, fn=fn)
+    suspected_set = set(suspected_ids)
+    all_set = set(all_txn_ids)
+    tp = len(suspected_set & ground_truth_fraud_ids)
+    fp = len(suspected_set - ground_truth_fraud_ids)
+    fn = len(ground_truth_fraud_ids - suspected_set)
+    tn = len(all_set - suspected_set - ground_truth_fraud_ids)
+    return LevelScore(
+        level=level,
+        total_txns=len(all_txn_ids),
+        flagged=len(suspected_ids),
+        tp=tp,
+        fp=fp,
+        fn=fn,
+        tn=tn,
+    )
 
 
 def build_leaderboard(scores: List[LevelScore]) -> str:
-    lines = []
-    divider = "=" * 72
-    lines.append(divider)
-    lines.append(f"  {'LEVEL':<8} {'ACC':>7} {'PREC':>7} {'REC':>7} {'F1':>7} {'THREAT':<10} {'TP':>4} {'FP':>4} {'TN':>4} {'FN':>4}")
-    lines.append(divider)
+    W = 76
+    divider = "=" * W
+    lines = [
+        divider,
+        f"  {'LEVEL':<10} {'VALID':<8} {'FLAGGED':>8} {'TP':>5} {'FP':>5} {'FN':>5}"
+        f" {'PREC':>7} {'REC':>7} {'F1':>7} {'COST':>8}",
+        divider,
+    ]
+    total_cost = 0.0
     total_f1 = 0.0
     for s in scores:
         lines.append(
-            f"  {'Level '+str(s.level):<8} {s.accuracy:>6.1%} {s.precision:>6.1%}"
-            f" {s.recall:>6.1%} {s.f1:>6.1%} {s.threat_level:<10}"
-            f" {s.tp:>4} {s.fp:>4} {s.tn:>4} {s.fn:>4}"
+            f"  {'Level '+str(s.level):<10} {s.validity_label:<8} {s.flagged:>8}"
+            f" {s.tp:>5} {s.fp:>5} {s.fn:>5}"
+            f" {s.precision:>6.1%} {s.recall:>6.1%} {s.f1:>6.1%} {s.asymmetric_cost:>8.1f}"
         )
+        total_cost += s.asymmetric_cost
         total_f1 += s.f1
-    lines.append(divider)
     avg_f1 = total_f1 / len(scores) if scores else 0.0
-    lines.append(f"  {'OVERALL':<8} {'':>7} {'':>7} {'':>7} {avg_f1:>6.1%} {'avg F1':<10}")
+    lines.append(divider)
+    lines.append(
+        f"  {'OVERALL':<10} {'':8} {'':>8} {'':>5} {'':>5} {'':>5}"
+        f" {'':>7} {'':>7} {avg_f1:>6.1%} {total_cost:>8.1f}"
+    )
+    lines.append(f"  Note: asymmetric cost = FP*1 + FN*3 (FN penalised 3x)")
     lines.append(divider)
     return "\n".join(lines)

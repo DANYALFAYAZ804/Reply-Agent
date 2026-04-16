@@ -1,6 +1,6 @@
 import re
 from dataclasses import dataclass
-from typing import List, Dict
+from typing import List, Set
 from langchain_core.messages import HumanMessage
 from langfuse import observe
 from langfuse.langchain import CallbackHandler
@@ -14,8 +14,17 @@ from src.config import (
     CITY,
     INSTITUTION,
     AGENT_NAME,
+    get_hacker_history_text,
 )
-from src.data import Transaction, LEVEL_PROFILES
+from src.data import (
+    LevelDataset,
+    format_transactions_block,
+    format_locations_block,
+    format_users_block,
+    format_conversations_block,
+    format_messages_block,
+    get_all_txn_ids,
+)
 
 
 @dataclass
@@ -25,7 +34,7 @@ class LevelReport:
     detector_report: str
     strategist_report: str
     coordinator_report: str
-    predictions: Dict[str, str]
+    suspected_ids: List[str]
 
 
 def _call_agent(model, prompt: str, session_id: str) -> str:
@@ -41,73 +50,73 @@ def _call_agent(model, prompt: str, session_id: str) -> str:
     return response.content
 
 
-def _parse_predictions(coordinator_report: str, eval_transactions: List[Transaction]) -> Dict[str, str]:
-    predictions: Dict[str, str] = {}
-    lines = coordinator_report.splitlines()
-    for line in lines:
-        if "|" in line:
-            parts = [p.strip() for p in line.split("|")]
-            if len(parts) >= 2:
-                txn_id = parts[0].strip()
-                prediction = parts[1].strip().lower()
-                if prediction in ("fraudulent", "legitimate"):
-                    predictions[txn_id] = prediction
-    for txn in eval_transactions:
-        if txn.txn_id not in predictions:
-            text = coordinator_report.lower()
-            pattern = re.escape(txn.txn_id.lower())
-            match = re.search(pattern + r".*?(fraudulent|legitimate)", text)
-            if match:
-                predictions[txn.txn_id] = match.group(1)
-            else:
-                predictions[txn.txn_id] = "legitimate"
-    return predictions
+def _parse_fraud_list(coordinator_report: str, all_ids: Set[str]) -> List[str]:
+    suspected = []
+    in_block = False
+    for line in coordinator_report.splitlines():
+        stripped = line.strip()
+        if stripped == "===FRAUD_LIST===":
+            in_block = True
+            continue
+        if stripped == "===END_LIST===":
+            in_block = False
+            continue
+        if in_block and stripped and stripped in all_ids:
+            suspected.append(stripped)
+
+    if not suspected:
+        uuid_pattern = re.compile(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE
+        )
+        for match in uuid_pattern.finditer(coordinator_report):
+            uid = match.group(0)
+            if uid in all_ids and uid not in suspected:
+                suspected.append(uid)
+
+    return suspected
 
 
 @observe()
-def run_analyst(session_id: str, model, training_text: str, level: int) -> str:
-    profile = LEVEL_PROFILES[level]
+def run_analyst(session_id: str, model, dataset: LevelDataset) -> str:
     prompt = ANALYST_PROMPT.format(
         agent_name=AGENT_NAME,
         institution=INSTITUTION,
         city=CITY,
         year=SYSTEM_YEAR,
-        level=level,
-        level_description=profile["description"],
-        additional_data=profile["additional_data"],
-        transactions=training_text,
+        level=dataset.level,
+        transactions=format_transactions_block(dataset.transactions),
+        locations=format_locations_block(dataset.locations),
+        users=format_users_block(dataset.users),
+        conversations=format_conversations_block(dataset.conversations),
+        messages=format_messages_block(dataset.messages),
     )
     return _call_agent(model, prompt, session_id)
 
 
 @observe()
-def run_detector(session_id: str, model, analyst_report: str, eval_text: str, level: int) -> str:
-    profile = LEVEL_PROFILES[level]
+def run_detector(session_id: str, model, analyst_report: str, dataset: LevelDataset) -> str:
     prompt = DETECTOR_PROMPT.format(
         agent_name=AGENT_NAME,
         institution=INSTITUTION,
         city=CITY,
         year=SYSTEM_YEAR,
-        level=level,
-        level_description=profile["description"],
+        level=dataset.level,
         analyst_report=analyst_report,
-        transactions=eval_text,
+        transactions=format_transactions_block(dataset.transactions, max_rows=150),
     )
     return _call_agent(model, prompt, session_id)
 
 
 @observe()
-def run_strategist(session_id: str, model, detector_report: str, hacker_history: str, level: int) -> str:
-    profile = LEVEL_PROFILES[level]
+def run_strategist(session_id: str, model, analyst_report: str, detector_report: str, dataset: LevelDataset) -> str:
     prompt = STRATEGIST_PROMPT.format(
         agent_name=AGENT_NAME,
         institution=INSTITUTION,
         city=CITY,
         year=SYSTEM_YEAR,
-        level=level,
-        level_description=profile["description"],
+        level=dataset.level,
         detector_report=detector_report,
-        hacker_history=hacker_history,
+        hacker_history=get_hacker_history_text(dataset.level),
     )
     return _call_agent(model, prompt, session_id)
 
@@ -119,19 +128,19 @@ def run_coordinator(
     analyst_report: str,
     detector_report: str,
     strategist_report: str,
-    level: int,
+    dataset: LevelDataset,
 ) -> str:
-    profile = LEVEL_PROFILES[level]
+    all_ids = get_all_txn_ids(dataset.transactions)
     prompt = COORDINATOR_PROMPT.format(
         agent_name=AGENT_NAME,
         institution=INSTITUTION,
         city=CITY,
         year=SYSTEM_YEAR,
-        level=level,
-        level_description=profile["description"],
+        level=dataset.level,
         analyst_report=analyst_report,
         detector_report=detector_report,
         strategist_report=strategist_report,
+        all_txn_ids="\n".join(all_ids),
     )
     return _call_agent(model, prompt, session_id)
 
@@ -143,24 +152,33 @@ def run_level_pipeline(
     detector_model,
     strategist_model,
     coordinator_model,
-    training_text: str,
-    eval_text: str,
-    eval_transactions: List[Transaction],
-    hacker_history: str,
-    level: int,
+    dataset: LevelDataset,
 ) -> LevelReport:
-    analyst_report = run_analyst(session_id, analyst_model, training_text, level)
-    detector_report = run_detector(session_id, detector_model, analyst_report, eval_text, level)
-    strategist_report = run_strategist(session_id, strategist_model, detector_report, hacker_history, level)
+    all_ids_set = set(get_all_txn_ids(dataset.transactions))
+
+    analyst_report = run_analyst(session_id, analyst_model, dataset)
+    detector_report = run_detector(session_id, detector_model, analyst_report, dataset)
+    strategist_report = run_strategist(session_id, strategist_model, analyst_report, detector_report, dataset)
     coordinator_report = run_coordinator(
-        session_id, coordinator_model, analyst_report, detector_report, strategist_report, level
+        session_id, coordinator_model, analyst_report, detector_report, strategist_report, dataset
     )
-    predictions = _parse_predictions(coordinator_report, eval_transactions)
+
+    suspected_ids = _parse_fraud_list(coordinator_report, all_ids_set)
+
+    total = len(all_ids_set)
+    if len(suspected_ids) == 0 or len(suspected_ids) == total:
+        fraud_lines = re.findall(
+            r"FRAUD:\s*([0-9a-f\-]{36})", detector_report + "\n" + strategist_report, re.IGNORECASE
+        )
+        for fid in fraud_lines:
+            if fid in all_ids_set and fid not in suspected_ids:
+                suspected_ids.append(fid)
+
     return LevelReport(
-        level=level,
+        level=dataset.level,
         analyst_report=analyst_report,
         detector_report=detector_report,
         strategist_report=strategist_report,
         coordinator_report=coordinator_report,
-        predictions=predictions,
+        suspected_ids=suspected_ids,
     )
