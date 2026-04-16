@@ -20,6 +20,7 @@ from src.config import (
 from src.data import (
     LevelDataset,
     format_transactions_block,
+    format_transactions_compact,
     format_locations_block,
     format_users_block,
     format_conversations_block,
@@ -31,7 +32,12 @@ logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 2
 RETRY_DELAY = 2
-MAX_WORKERS = 4
+MAX_WORKERS = 8
+
+_UUID = re.compile(
+    r"\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -49,8 +55,7 @@ def _call_agent(model, prompt: str, session_id: str, agent_name: str = "agent") 
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            messages = [HumanMessage(content=prompt)]
-            response = model.invoke(messages)
+            response = model.invoke([HumanMessage(content=prompt)])
             return response.content
         except Exception as e:
             last_error = e
@@ -74,9 +79,25 @@ def _call_agent(model, prompt: str, session_id: str, agent_name: str = "agent") 
     raise RuntimeError(f"[{agent_name}] failed after {MAX_RETRIES} attempts. Last: {last_error}")
 
 
+def _extract_uuids_from_prefixed_lines(text: str, all_ids: Set[str], prefixes: tuple) -> List[str]:
+    results: List[str] = []
+    seen: Set[str] = set()
+    for line in text.splitlines():
+        stripped = line.strip().upper()
+        if any(stripped.startswith(p) for p in prefixes):
+            for match in _UUID.finditer(line):
+                uid = match.group(1)
+                if uid in all_ids and uid not in seen:
+                    results.append(uid)
+                    seen.add(uid)
+    return results
+
+
 def _parse_fraud_list(text: str, all_ids: Set[str]) -> List[str]:
-    suspected = []
+    suspected: List[str] = []
+    seen: Set[str] = set()
     in_block = False
+
     for line in text.splitlines():
         stripped = line.strip()
         if "===FRAUD_LIST===" in stripped:
@@ -85,16 +106,12 @@ def _parse_fraud_list(text: str, all_ids: Set[str]) -> List[str]:
         if "===END_LIST===" in stripped:
             in_block = False
             continue
-        if in_block and stripped and stripped in all_ids:
+        if in_block and stripped and stripped in all_ids and stripped not in seen:
             suspected.append(stripped)
+            seen.add(stripped)
 
     if not suspected:
-        uuid_pattern = re.compile(
-            r"\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b",
-            re.IGNORECASE,
-        )
-        seen: Set[str] = set()
-        for match in uuid_pattern.finditer(text):
+        for match in _UUID.finditer(text):
             uid = match.group(1)
             if uid in all_ids and uid not in seen:
                 suspected.append(uid)
@@ -103,8 +120,28 @@ def _parse_fraud_list(text: str, all_ids: Set[str]) -> List[str]:
     return suspected
 
 
-def _make_analyst_prompts(dataset: LevelDataset, chunk_size: int = 100) -> List[Tuple[int, str]]:
+def _run_parallel(model, prompts: List[Tuple[int, str]], session_id: str, role: str) -> List[Tuple[int, str]]:
+    results: List[Tuple[int, str]] = []
+    total = len(prompts)
+
+    with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, total)) as executor:
+        future_to_idx = {
+            executor.submit(_call_agent, model, prompt, session_id, f"{role}-b{idx}"): idx
+            for idx, prompt in prompts
+        }
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            result = future.result()
+            results.append((idx, result))
+            print(f"    [{role}] batch {idx}/{total} done", flush=True)
+
+    results.sort(key=lambda x: x[0])
+    return results
+
+
+def run_analyst(session_id: str, model, dataset: LevelDataset) -> str:
     txns = dataset.transactions
+    chunk_size = 120
     loc_text = format_locations_block(dataset.locations, max_rows=15)
     usr_text = format_users_block(dataset.users, max_rows=8)
     conv_text = format_conversations_block(dataset.conversations, max_rows=6)
@@ -128,16 +165,21 @@ def _make_analyst_prompts(dataset: LevelDataset, chunk_size: int = 100) -> List[
             messages=msg_text if idx == 1 else "(see batch 1)",
         )
         prompts.append((idx, prompt))
-    return prompts
+
+    results = _run_parallel(model, prompts, session_id, "Analyst")
+    return "\n\n".join(f"--- Batch {idx} ---\n{text}" for idx, text in results)
 
 
-def _make_detector_prompts(dataset: LevelDataset, analyst_summary: str, chunk_size: int = 100) -> List[Tuple[int, str]]:
+def run_detector(session_id: str, model, analyst_report: str, dataset: LevelDataset) -> str:
     txns = dataset.transactions
+    chunk_size = 150
+    analyst_summary = analyst_report[:2000] + ("..." if len(analyst_report) > 2000 else "")
+
     chunks = [txns[i:i + chunk_size] for i in range(0, len(txns), chunk_size)]
     total = len(chunks)
     prompts = []
     for idx, chunk in enumerate(chunks, 1):
-        txn_text = format_transactions_block(chunk, max_rows=chunk_size)
+        txn_text = format_transactions_compact(chunk, max_rows=chunk_size)
         prompt = DETECTOR_PROMPT.format(
             agent_name=AGENT_NAME,
             institution=INSTITUTION,
@@ -148,45 +190,13 @@ def _make_detector_prompts(dataset: LevelDataset, analyst_summary: str, chunk_si
             transactions=f"(batch {idx}/{total})\n{txn_text}",
         )
         prompts.append((idx, prompt))
-    return prompts
 
-
-def _run_parallel(model, prompts: List[Tuple[int, str]], session_id: str, role: str) -> List[Tuple[int, str]]:
-    results: List[Tuple[int, str]] = []
-    total = len(prompts)
-
-    with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, total)) as executor:
-        future_to_idx = {
-            executor.submit(_call_agent, model, prompt, session_id, f"{role}-batch{idx}"): idx
-            for idx, prompt in prompts
-        }
-        for future in as_completed(future_to_idx):
-            idx = future_to_idx[future]
-            result = future.result()
-            results.append((idx, result))
-            print(f"    [{role}] batch {idx}/{total} done", flush=True)
-
-    results.sort(key=lambda x: x[0])
-    return results
-
-
-def run_analyst(session_id: str, model, dataset: LevelDataset) -> str:
-    prompts = _make_analyst_prompts(dataset, chunk_size=100)
-    results = _run_parallel(model, prompts, session_id, "Analyst")
-    return "\n\n".join(f"--- Batch {idx} ---\n{text}" for idx, text in results)
-
-
-def run_detector(session_id: str, model, analyst_report: str, dataset: LevelDataset) -> str:
-    analyst_summary = analyst_report[:1500] + ("..." if len(analyst_report) > 1500 else "")
-    prompts = _make_detector_prompts(dataset, analyst_summary, chunk_size=100)
     results = _run_parallel(model, prompts, session_id, "Detector")
     return "\n\n".join(f"--- Batch {idx} ---\n{text}" for idx, text in results)
 
 
-def run_strategist(session_id: str, model, analyst_report: str, detector_report: str, dataset: LevelDataset) -> str:
-    analyst_summary = analyst_report[:1200] + ("..." if len(analyst_report) > 1200 else "")
-    detector_summary = detector_report[:1800] + ("..." if len(detector_report) > 1800 else "")
-
+def run_strategist(session_id: str, model, detector_report: str, dataset: LevelDataset) -> str:
+    detector_summary = detector_report[:2000] + ("..." if len(detector_report) > 2000 else "")
     prompt = STRATEGIST_PROMPT.format(
         agent_name=AGENT_NAME,
         institution=INSTITUTION,
@@ -202,20 +212,20 @@ def run_strategist(session_id: str, model, analyst_report: str, detector_report:
 def run_coordinator(
     session_id: str,
     model,
-    analyst_report: str,
     detector_report: str,
     strategist_report: str,
     dataset: LevelDataset,
 ) -> str:
     all_ids = get_all_txn_ids(dataset.transactions)
     all_ids_set = set(all_ids)
-    analyst_summary = analyst_report[:1000] + ("..." if len(analyst_report) > 1000 else "")
-    detector_summary = detector_report[:2000] + ("..." if len(detector_report) > 2000 else "")
+
+    detector_summary = detector_report[:2500] + ("..." if len(detector_report) > 2500 else "")
     strategist_summary = strategist_report[:800] + ("..." if len(strategist_report) > 800 else "")
 
-    BATCH_SIZE = 250
+    BATCH_SIZE = 300
     id_chunks = [all_ids[i:i + BATCH_SIZE] for i in range(0, len(all_ids), BATCH_SIZE)]
     all_suspected: List[str] = []
+    seen: Set[str] = set()
 
     prompts = []
     for idx, id_chunk in enumerate(id_chunks, 1):
@@ -225,7 +235,6 @@ def run_coordinator(
             city=CITY,
             year=SYSTEM_YEAR,
             level=dataset.level,
-            analyst_report=analyst_summary if idx == 1 else "(see batch 1)",
             detector_report=detector_summary if idx == 1 else "(see batch 1)",
             strategist_report=strategist_summary if idx == 1 else "(see batch 1)",
             all_txn_ids="\n".join(id_chunk),
@@ -235,14 +244,12 @@ def run_coordinator(
     results = _run_parallel(model, prompts, session_id, "Coordinator")
 
     for _, result in results:
-        batch_ids = _parse_fraud_list(result, all_ids_set)
-        for bid in batch_ids:
-            if bid not in all_suspected:
+        for bid in _parse_fraud_list(result, all_ids_set):
+            if bid not in seen:
                 all_suspected.append(bid)
+                seen.add(bid)
 
     return (
-        f"Coordinator consolidated {len(all_suspected)} suspected fraud IDs "
-        f"from {len(id_chunks)} batch(es).\n"
         f"===FRAUD_LIST===\n"
         + "\n".join(all_suspected)
         + "\n===END_LIST==="
@@ -257,34 +264,41 @@ def run_level_pipeline(
     coordinator_model,
     dataset: LevelDataset,
 ) -> LevelReport:
-    all_ids_set = set(get_all_txn_ids(dataset.transactions))
+    all_ids = get_all_txn_ids(dataset.transactions)
+    all_ids_set = set(all_ids)
     total = len(all_ids_set)
 
-    print(f"  [Analyst]     {len(dataset.transactions)} transactions — running batches in parallel...")
+    print(f"  [Analyst]     {len(dataset.transactions)} transactions — parallel batches...")
     analyst_report = run_analyst(session_id, analyst_model, dataset)
 
-    print(f"  [Detector]    scoring transactions in parallel...")
+    print(f"  [Detector]    scoring with compact fields — parallel batches...")
     detector_report = run_detector(session_id, detector_model, analyst_report, dataset)
 
-    print(f"  [Strategist]  adapting to new hacker patterns...")
-    strategist_report = run_strategist(session_id, strategist_model, analyst_report, detector_report, dataset)
+    print(f"  [Strategist]  hunting missed fraud...")
+    strategist_report = run_strategist(session_id, strategist_model, detector_report, dataset)
 
-    print(f"  [Coordinator] consolidating final fraud verdict in parallel...")
+    print(f"  [Coordinator] producing final confirmed fraud list...")
     coordinator_report = run_coordinator(
-        session_id, coordinator_model, analyst_report, detector_report, strategist_report, dataset
+        session_id, coordinator_model, detector_report, strategist_report, dataset
     )
 
     suspected_ids = _parse_fraud_list(coordinator_report, all_ids_set)
 
     if len(suspected_ids) == 0:
-        logger.warning("  [Warning] Coordinator returned 0 IDs — falling back to Detector output.")
+        logger.warning("  [Warning] Coordinator returned 0 IDs — falling back to Detector FRAUD lines.")
+        suspected_ids = _extract_uuids_from_prefixed_lines(
+            detector_report, all_ids_set, prefixes=("FRAUD:",)
+        )
+
+    if len(suspected_ids) == 0:
+        logger.warning("  [Warning] Still 0 IDs — UUID fallback from detector.")
         suspected_ids = _parse_fraud_list(detector_report, all_ids_set)
 
     if len(suspected_ids) == total:
-        logger.warning("  [Warning] All transactions flagged — trimming to top 40%.")
-        suspected_ids = suspected_ids[:max(1, int(total * 0.4))]
+        logger.warning("  [Warning] All transactions flagged — trimming to top 35%.")
+        suspected_ids = suspected_ids[:max(1, int(total * 0.35))]
 
-    print(f"  [Done]        {len(suspected_ids)} transactions flagged as suspected fraud.")
+    print(f"  [Done]        {len(suspected_ids)} confirmed fraud transactions.")
 
     return LevelReport(
         level=dataset.level,

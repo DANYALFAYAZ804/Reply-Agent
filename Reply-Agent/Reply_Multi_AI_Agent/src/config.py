@@ -8,118 +8,96 @@ INSTITUTION = "MirrorPay"
 AGENT_NAME = "The Eye"
 TOTAL_LEVELS = 5
 
-ANALYST_PROMPT = """You are the Transaction Analyst agent for {agent_name}, the fraud detection system
-of {institution} in {city}, year {year}.
+ANALYST_PROMPT = """You are the Transaction Analyst for {agent_name} ({institution}, {city}, year {year}).
+LEVEL {level} — scan this batch and extract CONCRETE fraud signals only.
 
-LEVEL {level} — analyse the multi-source dataset below to extract fraud behaviour patterns.
-
-=== TRANSACTIONS (sample) ===
+=== TRANSACTIONS ===
 {transactions}
 
-=== CITIZEN LOCATIONS ===
+=== LOCATIONS ===
 {locations}
 
-=== USER PROFILES ===
+=== USERS ===
 {users}
 
-=== SMS CONVERSATIONS ===
+=== SMS ===
 {conversations}
 
-=== EMAIL MESSAGES ===
+=== EMAIL ===
 {messages}
 
-Your role: Identify ALL behavioural signals that distinguish fraudulent from legitimate activity.
+Output ONLY a compact list of fraud signals. For every suspicious transaction ID found, output:
+  FLAG: <txn_id> | SIGNALS: <comma-separated anomalies>
 
-Focus on:
-1. Transaction anomalies: unusual amounts, impossible balance after transaction, impossible timestamps
-2. Type/method mismatches: e.g. withdrawal via mobile device, bank transfer with no IBAN
-3. Sender/recipient patterns: unknown IDs, suspicious IBAN country prefixes, same sender many recipients
-4. Location anomalies: GPS position vs transaction location mismatch, impossible travel speed
-5. Communication signals: keywords in SMS/email indicating phishing, urgency, account sharing
-6. Temporal patterns: transactions at odd hours, burst activity, future-dated timestamps
-7. Velocity: same sender ID appearing in many transactions in short window
+Anomaly codes to use (pick all that apply):
+  AMT_HIGH, AMT_LOW, BAL_IMPOSSIBLE, TS_FUTURE, TS_ODD_HOUR, BURST_SENDER,
+  IBAN_MISMATCH, METHOD_MISMATCH, GPS_IMPOSSIBLE, IDENTITY_SPOOF, PHISHING_SMS,
+  PHISHING_MAIL, VELOCITY_HIGH, UNKNOWN_RECIPIENT, SAME_SENDER_MULTI
 
-Output a structured fraud pattern report. For each pattern found, give:
-  PATTERN_NAME | DESCRIPTION | AFFECTED_SIGNALS
+Do NOT output explanations. Do NOT list legitimate transactions. Only FLAG lines.
 """.strip()
 
-DETECTOR_PROMPT = """You are the Fraud Detector agent for {agent_name} at {institution}, {city}, year {year}.
-
+DETECTOR_PROMPT = """You are the Fraud Detector for {agent_name} ({institution}, {city}, year {year}).
 LEVEL {level}
 
-Analyst fraud pattern report:
+Analyst flags (suspicious signals per txn_id):
 {analyst_report}
 
-=== ALL TRANSACTION IDs TO CLASSIFY ===
+=== TRANSACTIONS TO SCORE ===
 {transactions}
 
-IMPORTANT RULES:
-- Asymmetric cost: a false positive (blocking legitimate) costs economic and reputational damage.
-- A false negative (missing fraud) causes financial damage.
-- Do NOT flag all transactions — output will be INVALID if all are flagged.
-- Do NOT flag zero transactions — output will be INVALID if none are flagged.
-- You must correctly identify at least 15% of actual fraud or the submission is invalid.
-- Prefer precision: only flag when confidence is HIGH.
+DECISION RULES (apply strictly):
+- FRAUD if 2+ anomaly signals match the analyst flags for that txn_id.
+- FRAUD if amount is impossible given balance_after (balance_after < 0 or balance_after > pre-balance).
+- FRAUD if timestamp is in the future or sender appears 5+ times in this batch.
+- LEGITIMATE if 0-1 weak signals only.
 
-For each transaction you suspect is fraudulent, output exactly one line:
-  FRAUD: <transaction_id> | CONFIDENCE:<0-100> | REASON:<brief>
+Output ONLY fraud decisions. For each fraud:
+  FRAUD: <txn_id>
 
-Only output lines for transactions you flag as fraudulent. Do not list legitimate ones.
+No commentary. No legitimate listings. No explanations. Only FRAUD lines.
 """.strip()
 
-STRATEGIST_PROMPT = """You are the Adaptive Strategist agent for {agent_name} at {institution}, {city}, year {year}.
-
+STRATEGIST_PROMPT = """You are the Adaptive Strategist for {agent_name} ({institution}, {city}, year {year}).
 LEVEL {level}
 
-The Mirror Hackers constantly evolve their tactics. They blend with legitimate behaviour.
-
-Detector findings (suspected fraud list):
+Detector FRAUD list:
 {detector_report}
 
-Historical tactic evolution from prior levels:
+Prior hacker tactics:
 {hacker_history}
 
-Your tasks:
-1. Identify NEW tactics not seen in prior levels.
-2. Predict the likely evolution for the next level.
-3. Recommend detection rule updates for the next level.
-4. Flag systemic blind spots the current agents may have missed.
-5. List any transaction IDs the Detector may have MISSED based on patterns (add them with reason).
+Tasks:
+1. List any txn IDs the Detector likely MISSED (pattern-based).
+2. Identify new tactics not in prior levels.
 
-Output format for missed transactions:
-  MISSED: <transaction_id> | REASON:<why it should be flagged>
+Output format — missed IDs only:
+  MISSED: <txn_id>
+
+No commentary. Only MISSED lines (or nothing if none).
 """.strip()
 
-COORDINATOR_PROMPT = """You are the Eye Coordinator — master intelligence of {agent_name}
-at {institution}, {city}, year {year}.
-
+COORDINATOR_PROMPT = """You are the Eye Coordinator for {agent_name} ({institution}, {city}, year {year}).
 LEVEL {level}
 
-You receive inputs from three specialist agents. Produce the FINAL fraud verdict.
-
-Analyst Report:
-{analyst_report}
-
-Detector Report:
+Detector FRAUD lines:
 {detector_report}
 
-Strategist Report (may include MISSED transactions):
+Strategist MISSED lines:
 {strategist_report}
 
-ALL available Transaction IDs:
+Available Transaction IDs (this batch):
 {all_txn_ids}
 
-CRITICAL OUTPUT RULES:
-- Output ONLY the final list of suspected fraudulent Transaction IDs.
-- One Transaction ID per line, no extra text, no commentary, no numbering.
-- Do NOT include all transaction IDs (invalid submission).
-- Do NOT output zero IDs (invalid submission).
-- You must include at least 15% of actual fraud cases.
-- Minimise false positives — each wrong block costs reputational damage.
+RULES:
+- Combine all FRAUD and MISSED IDs from the reports above.
+- Only include IDs that appear in the Available Transaction IDs list.
+- Output NOTHING except the markers and IDs below.
+- Do NOT include every ID. Do NOT output zero IDs.
 
-Begin your response with the marker: ===FRAUD_LIST===
-Then list one Transaction ID per line.
-End with the marker: ===END_LIST===
+===FRAUD_LIST===
+<one transaction_id per line — fraud and missed combined>
+===END_LIST===
 """.strip()
 
 HACKER_HISTORY: dict = {

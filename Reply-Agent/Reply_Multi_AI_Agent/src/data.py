@@ -41,6 +41,14 @@ class Transaction:
             parts.append(f"desc:{self.description}")
         return " | ".join(parts)
 
+    def to_compact(self) -> str:
+        return (
+            f"TXN_ID:{self.transaction_id} | sender:{self.sender_id}"
+            f" | type:{self.transaction_type} | amount:{self.amount}"
+            f" | balance_after:{self.balance_after} | time:{self.timestamp}"
+            f" | method:{self.payment_method}"
+        )
+
 
 @dataclass
 class Location:
@@ -216,6 +224,14 @@ def format_transactions_block(transactions: List[Transaction], max_rows: int = 8
     lines = [t.to_text() for t in rows]
     if len(transactions) > max_rows:
         lines.append(f"... ({len(transactions) - max_rows} more transactions not shown)")
+    return "\n".join(lines)
+
+
+def format_transactions_compact(transactions: List[Transaction], max_rows: int = 150) -> str:
+    rows = transactions[:max_rows]
+    lines = [t.to_compact() for t in rows]
+    if len(transactions) > max_rows:
+        lines.append(f"... ({len(transactions) - max_rows} more)")
     return "\n".join(lines)
 
 
