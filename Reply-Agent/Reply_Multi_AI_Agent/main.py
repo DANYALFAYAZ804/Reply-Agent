@@ -45,9 +45,7 @@ LEVEL_NAMES = {
     5: "Level 5",
 }
 
-LEVELS_TO_RUN = [lvl for lvl in range(1, TOTAL_LEVELS + 1)
-                 if os.path.exists(os.path.join(DATA_DIR, f"level_{lvl}", "transactions.csv"))
-                 or os.path.exists(os.path.join(DATA_DIR, f"level_{lvl}", "Transactions.csv"))]
+LEVELS_TO_RUN = [1]
 
 
 def _load_ground_truth(level: int) -> Set[str]:
@@ -110,18 +108,30 @@ def main() -> None:
         all_txn_ids = get_all_txn_ids(dataset.transactions)
         ground_truth = _load_ground_truth(level)
 
+        total_txns = len(all_txn_ids)
+        confirmed_fraud = final_ids
+        confirmed_legit = [t for t in all_txn_ids if t not in set(final_ids)]
+
+        print(f"\n  {'─' * 60}")
+        print(f"  RESULTS — Level {level}: {name}")
+        print(f"  {'─' * 60}")
+        print(f"  Total transactions : {total_txns}")
+        print(f"  Confirmed FRAUD    : {len(confirmed_fraud)}")
+        print(f"  Confirmed LEGIT    : {len(confirmed_legit)}")
+        print(f"  {'─' * 60}")
+
         if ground_truth:
             score = score_level(level, all_txn_ids, final_ids, ground_truth)
             all_scores.append(score)
             print(
-                f"\n  [SCORE] Level {level}: {score.validity_label}"
-                f" | Flagged={score.flagged} TP={score.tp} FP={score.fp} FN={score.fn}"
+                f"  [SCORE] {score.validity_label}"
+                f" | TP={score.tp} FP={score.fp} FN={score.fn}"
                 f" | Precision={score.precision:.1%} Recall={score.recall:.1%}"
-                f" F1={score.f1:.1%} Cost={score.asymmetric_cost:.1f}"
+                f" | F1={score.f1:.1%} Cost={score.asymmetric_cost:.1f}"
             )
         else:
-            print(f"\n  [SCORE] No ground_truth.txt for Level {level} — submission saved, scoring skipped.")
-            print(f"  [INFO]  Flagged {len(final_ids)} suspected fraud transactions.")
+            print(f"  [INFO]  No ground_truth.txt found — submission saved, scoring skipped.")
+        print(f"  {'─' * 60}")
 
     langfuse_client.flush()
 
