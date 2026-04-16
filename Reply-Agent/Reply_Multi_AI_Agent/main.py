@@ -1,9 +1,27 @@
 from dotenv import load_dotenv
-
-load_dotenv()
-
 import os
+
+_ENV_PATH = os.path.join(os.path.dirname(__file__), ".env")
+load_dotenv(dotenv_path=_ENV_PATH)
+
 from typing import Set
+
+
+def _check_env() -> None:
+    key = os.getenv("OPENROUTER_API_KEY", "")
+    if not key or key == "your-api-key-here":
+        raise SystemExit(
+            "\n[SETUP ERROR] OPENROUTER_API_KEY is not set.\n"
+            f"Edit the file: {_ENV_PATH}\n"
+            "Replace 'your-api-key-here' with your real key from https://openrouter.ai\n"
+        )
+    lf_pub = os.getenv("LANGFUSE_PUBLIC_KEY", "")
+    if not lf_pub or lf_pub == "pk-your-public-key-here":
+        raise SystemExit(
+            "\n[SETUP ERROR] LANGFUSE_PUBLIC_KEY is not set.\n"
+            f"Edit the file: {_ENV_PATH}\n"
+            "Replace the placeholder values with your real Langfuse credentials.\n"
+        )
 from src.config import get_langfuse_client, generate_session_id, AGENT_NAME, CITY, SYSTEM_YEAR, TOTAL_LEVELS
 from src.llm import get_analyst_model, get_detector_model, get_strategist_model, get_coordinator_model
 from src.data import load_level_dataset, get_all_txn_ids, LevelDataset
@@ -36,6 +54,7 @@ def _load_ground_truth(level: int) -> Set[str]:
 
 
 def main() -> None:
+    _check_env()
     print(f"\n{'=' * 70}")
     print(f"  {AGENT_NAME} — MirrorPay Fraud Intelligence System")
     print(f"  Location: {CITY}  |  Year: {SYSTEM_YEAR}  |  Levels: {TOTAL_LEVELS}")
@@ -53,9 +72,9 @@ def main() -> None:
     all_scores: list[LevelScore] = []
 
     for level in LEVELS_TO_RUN:
+        name = LEVEL_NAMES.get(level, f"Level {level}")
         print_level_header(level, name=name)
 
-        name = LEVEL_NAMES.get(level, f"Level {level}")
         dataset = load_level_dataset(DATA_DIR, level, name=name)
 
         if not dataset.transactions:
